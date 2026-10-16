@@ -4,6 +4,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -69,6 +70,58 @@ public class ReservationRepository {
                 .param("id", id)
                 .query(MAPPER)
                 .optional();
+    }
+
+    /**
+     * Moves a live reservation to CONFIRMED. The status guard in the WHERE
+     * clause makes the transition happen at most once even if confirm races
+     * with release or the expiry sweeper.
+     */
+    public Optional<Reservation> confirmIfLive(UUID id) {
+        return jdbc.sql("""
+                UPDATE reservations SET status = 'CONFIRMED'
+                 WHERE id = :id AND status = 'RESERVED' AND expires_at > now()
+                RETURNING %s
+                """.formatted(COLUMNS))
+                .param("id", id)
+                .query(MAPPER)
+                .optional();
+    }
+
+    /** Moves a live reservation to RELEASED; empty if it was already confirmed or released. */
+    public Optional<Reservation> releaseIfReserved(UUID id) {
+        return jdbc.sql("""
+                UPDATE reservations SET status = 'RELEASED'
+                 WHERE id = :id AND status = 'RESERVED'
+                RETURNING %s
+                """.formatted(COLUMNS))
+                .param("id", id)
+                .query(MAPPER)
+                .optional();
+    }
+
+    /**
+     * Releases up to {@code limit} expired reservations. SKIP LOCKED lets every
+     * pod run this concurrently: rows another pod is already releasing are
+     * skipped rather than waited on, so no reservation is restocked twice.
+     */
+    public List<Reservation> releaseExpired(int limit) {
+        return jdbc.sql("""
+                WITH expired AS (
+                    SELECT id FROM reservations
+                     WHERE status = 'RESERVED' AND expires_at <= now()
+                     ORDER BY expires_at
+                     LIMIT :limit
+                       FOR UPDATE SKIP LOCKED
+                )
+                UPDATE reservations r SET status = 'RELEASED'
+                  FROM expired
+                 WHERE r.id = expired.id
+                RETURNING r.*
+                """)
+                .param("limit", limit)
+                .query(MAPPER)
+                .list();
     }
 
     private static Reservation map(ResultSet rs, int row) throws SQLException {
