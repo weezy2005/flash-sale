@@ -1,9 +1,14 @@
 package com.wesil.flashsale.inventory.reservation;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.UUID;
 
 import com.wesil.flashsale.inventory.api.ConflictException;
+import com.wesil.flashsale.inventory.api.NotFoundException;
 import com.wesil.flashsale.inventory.product.ProductRepository;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -47,6 +52,54 @@ public class ReservationService {
             throw new ConflictException("SOLD_OUT", "not enough stock for " + sku);
         }
         return new ReserveResult(inserted.get(), true);
+    }
+
+    /** Confirming twice is a no-op so a retried payment callback is harmless. */
+    @Transactional
+    public Reservation confirm(UUID id) {
+        return reservations.confirmIfLive(id).orElseGet(() -> {
+            Reservation current = get(id);
+            return switch (current.status()) {
+                case CONFIRMED -> current;
+                case RELEASED -> throw new ConflictException("RESERVATION_RELEASED", "reservation was released");
+                case RESERVED -> throw new ConflictException("RESERVATION_EXPIRED", "reservation has expired");
+            };
+        });
+    }
+
+    /** Releasing twice is a no-op; the stock is only returned on the first transition. */
+    @Transactional
+    public Reservation release(UUID id) {
+        Optional<Reservation> released = reservations.releaseIfReserved(id);
+        if (released.isPresent()) {
+            products.increment(released.get().sku(), released.get().quantity());
+            return released.get();
+        }
+        Reservation current = get(id);
+        if (current.status() == ReservationStatus.CONFIRMED) {
+            throw new ConflictException("RESERVATION_CONFIRMED", "reservation is already confirmed");
+        }
+        return current;
+    }
+
+    /**
+     * Returns the stock held by one batch of expired reservations. Products are
+     * restocked in sku order so two pods sweeping overlapping products always
+     * take row locks in the same order and cannot deadlock each other.
+     */
+    @Transactional
+    public int releaseExpired(int batchSize) {
+        List<Reservation> expired = reservations.releaseExpired(batchSize);
+        Map<String, Integer> restock = new TreeMap<>();
+        for (Reservation r : expired) {
+            restock.merge(r.sku(), r.quantity(), Integer::sum);
+        }
+        restock.forEach(products::increment);
+        return expired.size();
+    }
+
+    public Reservation get(UUID id) {
+        return reservations.findById(id).orElseThrow(() -> new NotFoundException("reservation " + id));
     }
 
     private Reservation replay(String idempotencyKey, String sku, int quantity) {

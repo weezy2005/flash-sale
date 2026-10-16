@@ -2,8 +2,6 @@ package com.wesil.flashsale.inventory.reservation;
 
 import java.util.UUID;
 
-import com.wesil.flashsale.inventory.api.NotFoundException;
-
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -23,11 +21,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class ReservationController {
 
     private final ReservationService service;
-    private final ReservationRepository reservations;
 
-    public ReservationController(ReservationService service, ReservationRepository reservations) {
+    public ReservationController(ReservationService service) {
         this.service = service;
-        this.reservations = reservations;
     }
 
     public record ReserveRequest(@NotBlank String sku, @Min(1) int quantity) {
@@ -43,8 +39,18 @@ public class ReservationController {
         return ResponseEntity.status(status).body(result.reservation());
     }
 
+    @PostMapping("/{id}/confirm")
+    public Reservation confirm(@PathVariable UUID id) {
+        return service.confirm(id);
+    }
+
+    @PostMapping("/{id}/release")
+    public Reservation release(@PathVariable UUID id) {
+        return service.release(id);
+    }
+
     @GetMapping("/{id}")
     public Reservation get(@PathVariable UUID id) {
-        return reservations.findById(id).orElseThrow(() -> new NotFoundException("reservation " + id));
+        return service.get(id);
     }
 }
