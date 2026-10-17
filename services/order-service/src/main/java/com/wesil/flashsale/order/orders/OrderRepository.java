@@ -54,6 +54,18 @@ public class OrderRepository {
                 .optional();
     }
 
+    public Optional<Order> transitionFromPendingByReservation(UUID reservationId, OrderStatus to) {
+        return jdbc.sql("""
+                UPDATE orders SET status = :to, updated_at = now()
+                 WHERE reservation_id = :reservationId AND status = 'PENDING_PAYMENT'
+                RETURNING %s
+                """.formatted(COLUMNS))
+                .param("reservationId", reservationId)
+                .param("to", to.name())
+                .query(OrderRepository::map)
+                .optional();
+    }
+
     public Optional<Order> findById(UUID id) {
         return jdbc.sql("SELECT %s FROM orders WHERE id = :id".formatted(COLUMNS))
                 .param("id", id)
