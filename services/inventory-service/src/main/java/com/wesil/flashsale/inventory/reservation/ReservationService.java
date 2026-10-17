@@ -20,14 +20,17 @@ public class ReservationService {
 
     private final ReservationRepository reservations;
     private final ProductRepository products;
+    private final ReservationEvents events;
     private final Duration ttl;
 
     public ReservationService(
             ReservationRepository reservations,
             ProductRepository products,
+            ReservationEvents events,
             @Value("${inventory.reservation-ttl:10m}") Duration ttl) {
         this.reservations = reservations;
         this.products = products;
+        this.events = events;
         this.ttl = ttl;
     }
 
@@ -51,20 +54,24 @@ public class ReservationService {
         if (!products.tryDecrement(sku, quantity)) {
             throw new ConflictException("SOLD_OUT", "not enough stock for " + sku);
         }
+        events.record(ReservationEvent.Type.RESERVED, inserted.get());
         return new ReserveResult(inserted.get(), true);
     }
 
     /** Confirming twice is a no-op so a retried payment callback is harmless. */
     @Transactional
     public Reservation confirm(UUID id) {
-        return reservations.confirmIfLive(id).orElseGet(() -> {
-            Reservation current = get(id);
-            return switch (current.status()) {
-                case CONFIRMED -> current;
-                case RELEASED -> throw new ConflictException("RESERVATION_RELEASED", "reservation was released");
-                case RESERVED -> throw new ConflictException("RESERVATION_EXPIRED", "reservation has expired");
-            };
-        });
+        Optional<Reservation> confirmed = reservations.confirmIfLive(id);
+        if (confirmed.isPresent()) {
+            events.record(ReservationEvent.Type.CONFIRMED, confirmed.get());
+            return confirmed.get();
+        }
+        Reservation current = get(id);
+        return switch (current.status()) {
+            case CONFIRMED -> current;
+            case RELEASED -> throw new ConflictException("RESERVATION_RELEASED", "reservation was released");
+            case RESERVED -> throw new ConflictException("RESERVATION_EXPIRED", "reservation has expired");
+        };
     }
 
     /** Releasing twice is a no-op; the stock is only returned on the first transition. */
@@ -73,6 +80,7 @@ public class ReservationService {
         Optional<Reservation> released = reservations.releaseIfReserved(id);
         if (released.isPresent()) {
             products.increment(released.get().sku(), released.get().quantity());
+            events.record(ReservationEvent.Type.RELEASED, released.get());
             return released.get();
         }
         Reservation current = get(id);
@@ -93,6 +101,7 @@ public class ReservationService {
         Map<String, Integer> restock = new TreeMap<>();
         for (Reservation r : expired) {
             restock.merge(r.sku(), r.quantity(), Integer::sum);
+            events.record(ReservationEvent.Type.EXPIRED, r);
         }
         restock.forEach(products::increment);
         return expired.size();
