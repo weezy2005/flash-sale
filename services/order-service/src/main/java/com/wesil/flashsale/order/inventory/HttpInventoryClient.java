@@ -1,6 +1,7 @@
 package com.wesil.flashsale.order.inventory;
 
 import java.util.Map;
+import java.util.UUID;
 
 import com.wesil.flashsale.order.api.ConflictException;
 import com.wesil.flashsale.order.api.NotFoundException;
@@ -43,6 +44,17 @@ public class HttpInventoryClient implements InventoryClient {
                     throw conflict(res);
                 })
                 .body(InventoryReservation.class);
+    }
+
+    @Override
+    public void confirm(UUID reservationId) {
+        http.post()
+                .uri("/api/v1/reservations/{id}/confirm", reservationId)
+                .retrieve()
+                .onStatus(s -> s.value() == HttpStatus.CONFLICT.value(), (req, res) -> {
+                    throw conflict(res);
+                })
+                .toBodilessEntity();
     }
 
     /** Re-raises inventory's problem detail with its code intact. */

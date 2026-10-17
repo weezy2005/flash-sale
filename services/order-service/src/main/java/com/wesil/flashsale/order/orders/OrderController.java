@@ -38,6 +38,11 @@ public class OrderController {
         return ResponseEntity.status(status).body(result.order());
     }
 
+    @PostMapping("/{id}/pay")
+    public Order pay(@PathVariable UUID id) {
+        return service.pay(id);
+    }
+
     @GetMapping("/{id}")
     public Order get(@PathVariable UUID id) {
         return service.get(id);
