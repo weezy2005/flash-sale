@@ -1,5 +1,7 @@
 package com.wesil.flashsale.inventory.outbox;
 
+import java.util.List;
+
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Propagation;
@@ -27,6 +29,30 @@ public class OutboxRepository {
                 .param("topic", topic)
                 .param("key", key)
                 .param("payload", payload)
+                .update();
+    }
+
+    /** Locks the oldest unpublished rows, skipping any another relay already holds. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public List<OutboxEvent> claimUnpublished(int limit) {
+        return jdbc.sql("""
+                SELECT id, topic, message_key, payload::text AS payload
+                  FROM outbox_events
+                 WHERE published_at IS NULL
+                 ORDER BY id
+                 LIMIT :limit
+                   FOR UPDATE SKIP LOCKED
+                """)
+                .param("limit", limit)
+                .query((rs, row) -> new OutboxEvent(
+                        rs.getLong("id"), rs.getString("topic"), rs.getString("message_key"), rs.getString("payload")))
+                .list();
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void markPublished(List<Long> ids) {
+        jdbc.sql("UPDATE outbox_events SET published_at = now() WHERE id IN (:ids)")
+                .param("ids", ids)
                 .update();
     }
 }
